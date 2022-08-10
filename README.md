@@ -21,8 +21,8 @@ So this server and procedure was written to emulate that in a clean environment,
 ## Recreating the DVC push issue
 This was tested on DVC 2.11.0
 
-1. Run the Go server
-2. Clone this repo and `dvc pull` its data:
+1. Run the Go server with `go run .` (go version 1.18)
+2. Clone the following repo and `dvc pull` its data:
 https://dagshub.com/nirbarazida/hello-world
 3. Add the Go remote to the clone's list of remote `dvc remote add local http://localhost:3030`
 4. Push the data `dvc push -r local`
