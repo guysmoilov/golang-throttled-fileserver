@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -34,7 +35,8 @@ func main() {
 			}
 
 			// The key part - limit writing to 30KB per second
-			throttleWriter := NewThrottleWriter(file, 30000, 1<<12)
+			bpsInt, minWriteInt := getSpeeds()
+			throttleWriter := NewThrottleWriter(file, bpsInt, minWriteInt)
 
 			written, err := io.Copy(throttleWriter, req.Body)
 			if err != nil {
@@ -52,4 +54,24 @@ func main() {
 	if err != http.ErrServerClosed {
 		panic(err)
 	}
+}
+
+func getSpeeds() (int64, int64) {
+	bps := os.Getenv("BYTES_PER_SEC")
+	if bps == "" {
+		bps = "30000"
+	}
+	bpsInt, err := strconv.ParseInt(bps, 10, 64)
+	if err != nil {
+		panic(err)
+	}
+	minWrite := os.Getenv("MIN_WRITE")
+	if minWrite == "" {
+		minWrite = fmt.Sprint(1 << 12)
+	}
+	minWriteInt, err := strconv.ParseInt(minWrite, 10, 64)
+	if err != nil {
+		panic(err)
+	}
+	return bpsInt, minWriteInt
 }
