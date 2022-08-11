@@ -6,8 +6,13 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
+	"sync"
+)
+
+var (
+	mux                = sync.Mutex{}
+	postRequestCounter = map[string]uint{}
 )
 
 func main() {
@@ -23,7 +28,22 @@ func main() {
 			fileServer.ServeHTTP(resp, req)
 			return
 		case "POST", "PUT":
-			filePath := "./content/" + strings.TrimPrefix(req.URL.Path, "/")
+			reqPath := strings.TrimPrefix(req.URL.Path, "/")
+			counter := func() uint {
+				mux.Lock()
+				defer mux.Unlock()
+				// Should work since the default value is 1
+				postRequestCounter[reqPath] += 1
+				return postRequestCounter[reqPath]
+			}()
+			// Always fail the first request to trigger a retry
+			if counter == 1 {
+				fmt.Println("Failing first POST to ", reqPath)
+				resp.WriteHeader(500)
+				return
+			}
+
+			filePath := "./content/" + reqPath
 			fmt.Println("Writing ", filePath)
 			err := os.MkdirAll(filepath.Dir(filePath), 0755)
 			if err != nil {
@@ -34,11 +54,7 @@ func main() {
 				panic(err)
 			}
 
-			// The key part - limit writing to 30KB per second
-			bpsInt, minWriteInt := getSpeeds()
-			throttleWriter := NewThrottleWriter(file, bpsInt, minWriteInt)
-
-			written, err := io.Copy(throttleWriter, req.Body)
+			written, err := io.Copy(file, req.Body)
 			if err != nil {
 				fmt.Println("Error after writing ", written, " bytes to ", filePath, " : ", err)
 				resp.WriteHeader(500)
@@ -54,24 +70,4 @@ func main() {
 	if err != http.ErrServerClosed {
 		panic(err)
 	}
-}
-
-func getSpeeds() (int64, int64) {
-	bps := os.Getenv("BYTES_PER_SEC")
-	if bps == "" {
-		bps = "30000"
-	}
-	bpsInt, err := strconv.ParseInt(bps, 10, 64)
-	if err != nil {
-		panic(err)
-	}
-	minWrite := os.Getenv("MIN_WRITE")
-	if minWrite == "" {
-		minWrite = fmt.Sprint(1 << 12)
-	}
-	minWriteInt, err := strconv.ParseInt(minWrite, 10, 64)
-	if err != nil {
-		panic(err)
-	}
-	return bpsInt, minWriteInt
 }
