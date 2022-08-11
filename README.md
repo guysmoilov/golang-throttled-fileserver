@@ -1,29 +1,26 @@
-# Tiny, throttled HTTP DVC remote
+# Tiny, intermittently failing HTTP DVC remote
 
 This implements a very simple HTTP fileserver and valid DVC remote in Go.
-Uploads are throttled by default to 30KB per second, configurable via the `BYTES_PER_SEC` env var.
+Uploads fail on the first attempt, to cause the DVC client to retry the upload - which exposes a bug described below.
 
 ## Motivation - reliably reproduce corrupted DVC file uploads
 
 **The symptom: DVC push uploads a seemingly random chunk of some of the files it pushes, and reports success at the end of the upload.**
 
-The uploaded chunk(s) seems to come from the middle of the file, skipping its start.
+The uploaded chunk(s) seems to come from the middle of the file, skipping its start.  
+Short files appear to be truncated completely on the retry, resulting in empty files.
+
+This happens in the wild, when pushing to HTTP/S and Webdav remotes, with a slightly sketchy connections or when pushing
+large-is files.
 
 See the [attached wireshark capture file](diagnostics/corrupted-push-example.pcap) for a recreation of the issue.  
-To easily see the corrupted requests, you can use this display filter in Wireshark: `http.request.full_uri matches 4e368`  
-Then follow the TCP stream to clearly see that the HTTP chunk being sent is not the head of the file.  
-Note that in this case, the files should have been deleted from the server since the overall POST failed due to timeout -
-however, the problem of bad HTTP POSTs is real, and in many real-life cases the bad requests finish successfully
-and the corrupted files get uploaded.
+To easily see the 2 requests, the first valid one one which fails, and the second corrupted one which succeeds,
+Then after opening wireshark click Statistics -> Conversations, which will show 2 TCP streams, one for each request.  
+To see the HTTP content, then click on one of the TCP conversation and then the "Follow stream" button.
+You can see that the first short conversation stops with a 500 error from the server (intentionally), and then
+the second long conversation succeeds but the data sent to the server is corrupted.
 
 User remote caches then become corrupted in a way that's hard to recover from, and data may be lost permanently. 
-
-The problem seems to happen when the following conditions are met:
-* Slow network
-* Several large-ish files being pushed (though 1 is often enough)
-* Only HTTP remote was tested, but maybe others are also affected
-
-So this server and procedure was written to emulate that in a clean environment, so that DVC can be debugged.
 
 ## Recreating the DVC push issue
 This was tested on DVC 2.11.0 and 2.17.0
@@ -31,13 +28,12 @@ This was tested on DVC 2.11.0 and 2.17.0
 1. Run the Go server with `go run .` (go version 1.18)
 2. Clone the following repo and `dvc pull` its data:
 https://dagshub.com/nirbarazida/hello-world
-3. Add the Go remote to the clone's list of remote `dvc remote add local http://localhost:3030`
+3. Add the Go remote to the clone's list of remotes `dvc remote add local http://localhost:3030`
 4. Push the data `dvc push -r local`
-5. You'll see that the upload is very slow, 30KB per second per file - simulating real world problematic conditions
+5. You'll see that DVC reports a successful push
 6. To see the issue:
    1. Wait until the `dvc push` ends (will probably report failing on some of the files)
-   1. Compare the start of one of the uploading data files - most consistently, the data file which fails is `enron.csv`
-      with md5 `994e368ae5a22a6db1943a397e7c4308`
+   1. Compare the start of one of the uploading data files - e.g. `enron.csv` with md5 `994e368ae5a22a6db1943a397e7c4308`
    2. Run `head content/99/4e368ae5a22a6db1943a397e7c4308` inside the Go server dir to see what was uploaded
    3. Compare to the correct `head data/enron.csv` in the cloned hello-world repo
       * It should look like this:
@@ -54,11 +50,9 @@ https://dagshub.com/nirbarazida/hello-world
         central power and light company reliant energy - entex
         ```
    4. You should see a totally different start to the file in `head content/99/4e368ae5a22a6db1943a397e7c4308`
-   5. If not, check the other uploaded files as well.
+   5. If not, check the other uploaded files as well. The small ones get pushed as empty files.
 1. Optionally, confirm the problem with Wireshark - it can be clearly seen by following the HTTP stream of one of the broken files.
-1. Observation on what happens before the push finishes:
-   *  If you check the head of the files in the Go server immediately after the push starts, you'll see that they look fine
-   *  However, at a later point during the push, they become corrupted
+1. Observation on what happens:
    *  It seems that the DVC client starts by POSTing the correct data, but then after the initial request
       fails, it retries the POST with a different chunk of data - and since the web server is stateless,
       it just accepts this chunk as a valid HTTP request and dutifully saves the partial data
